@@ -1,7 +1,7 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 
-import { initBrowser, shutdownBrowser } from './src/browser/browser.js';
+import { initBrowser, shutdownBrowser, detectChrome } from './src/browser/browser.js';
 import apiRoutes from './src/api/routes.js';
 import { getAvailableModelsFromFile, getApiKeys } from './src/api/chat.js';
 import { loadTokens } from './src/api/tokenManager.js';
@@ -158,6 +158,16 @@ async function startServer() {
         }
     } else {
         ensureNonInteractiveTokens();
+    }
+
+    const chrome = await detectChrome();
+    if (chrome) {
+        logInfo(`Chrome detected at: ${chrome.source} (${chrome.path})`);
+        if (!process.env.CHROME_PATH) {
+            process.env.CHROME_PATH = chrome.path;
+        }
+    } else {
+        logInfo('No Chrome/Chromium detected — running in browser-free mode');
     }
 
     const browserInitialized = await initBrowser(false);
