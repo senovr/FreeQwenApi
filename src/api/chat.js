@@ -25,6 +25,10 @@ let authToken = null;
 let availableModels = null;
 let authKeys = null;
 let browserTokenRateLimited = false;
+let browserAvailable = true;
+
+export function setBrowserAvailable(val) { browserAvailable = val; }
+export function isBrowserAvailable() { return browserAvailable; }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -767,10 +771,17 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
     if (!availableModels) availableModels = getAvailableModelsFromFile();
 
     if (!chatId) {
-        const newChatResult = await createChatV2(model, 'Новый чат', 0, chatType);
-        if (newChatResult.error) return { error: 'Не удалось создать чат: ' + newChatResult.error };
-        chatId = newChatResult.chatId;
-        logInfo(`Создан новый чат v2 с ID: ${chatId}`);
+        if (!browserAvailable) {
+            const newChatResult = await createChatV2NodeFetch(model, 'Новый чат', chatType);
+            if (newChatResult.error) return { error: 'Не удалось создать чат: ' + newChatResult.error };
+            chatId = newChatResult.chatId;
+            logInfo(`Создан новый чат (Node fetch) с ID: ${chatId}`);
+        } else {
+            const newChatResult = await createChatV2(model, 'Новый чат', 0, chatType);
+            if (newChatResult.error) return { error: 'Не удалось создать чат: ' + newChatResult.error };
+            chatId = newChatResult.chatId;
+            logInfo(`Создан новый чат v2 с ID: ${chatId}`);
+        }
     }
 
     const validated = validateAndPrepareMessage(message);
@@ -790,6 +801,51 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
     if (chatType !== 't2t') {
         const typeLabels = { t2i: 'изображение', t2v: 'видео' };
         logInfo(`Тип генерации: ${chatType} (${typeLabels[chatType] || chatType})${size ? `, размер: ${size}` : ''}`);
+    }
+
+    // ─── Token-only path: no browser required ──────────────────────────────
+    if (!browserAvailable) {
+        const tokenObj = await getAvailableToken();
+        if (!tokenObj?.token) return { error: 'No valid tokens available', chatId };
+        authToken = tokenObj.token;
+        logInfo(`Token-only mode: using account ${tokenObj.id}`);
+
+        const payload = buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType, size);
+        const apiUrl = `${CHAT_API_URL}?chat_id=${chatId}`;
+        logDebug('=== TOKEN-ONLY PAYLOAD ===\n' + JSON.stringify(payload, null, 2));
+
+        const response = await executeApiRequestWithNodeStreaming(apiUrl, payload, authToken, onChunk);
+
+        if (response.success) {
+            logInfo('Token-only: response received successfully');
+            response.data.chatId = chatId;
+            response.data.parentId = response.data.response_id;
+            response.data.id = response.data.id || 'chatcmpl-' + Date.now();
+
+            // Fallback: if no streamed chunks, deliver content as single chunk
+            if (typeof onChunk === 'function' && response.data.choices?.[0]?.message?.content && !response.hasStreamedChunks) {
+                onChunk(response.data.choices[0].message.content);
+            }
+
+            return response.data;
+        }
+
+        // Rate limit
+        if (response.status === 429) {
+            markRateLimited(tokenObj.id);
+            logWarn(`Token ${tokenObj.id} rate limited in token-only mode`);
+            return { error: 'Rate limited', chatId };
+        }
+
+        // Auth failure
+        if (response.status === 401) {
+            const { markInvalid } = await import('./tokenManager.js');
+            markInvalid(tokenObj.id);
+            logWarn(`Token ${tokenObj.id} invalid (401) in token-only mode`);
+            return { error: 'Unauthorized', chatId };
+        }
+
+        return { error: response.error || response.statusText, details: response.errorBody || 'No details', chatId };
     }
 
     const browserContext = getBrowserContext();
@@ -1001,6 +1057,41 @@ export async function clearPagePool() {
 
 export function getAuthToken() {
     return authToken;
+}
+
+// ─── createChatV2NodeFetch ────────────────────────────────────────────────────
+
+async function createChatV2NodeFetch(model, title, chatType = 't2t') {
+    const tokenObj = await getAvailableToken();
+    if (!tokenObj?.token) return { error: 'No valid tokens available' };
+    authToken = tokenObj.token;
+
+    const payload = { title, models: [model], chat_mode: 'normal', chat_type: chatType, timestamp: Date.now() };
+
+    try {
+        const response = await fetch(CREATE_CHAT_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`,
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            return { error: `HTTP ${response.status}: ${errorBody}` };
+        }
+
+        const result = await response.json();
+        if (result.success && result.data?.id) {
+            logInfo(`Chat created via Node fetch: ${result.data.id}`);
+            return { success: true, chatId: result.data.id };
+        }
+        return { error: result.error || 'Unknown error creating chat' };
+    } catch (err) {
+        return { error: err.toString() };
+    }
 }
 
 // ─── createChatV2 ────────────────────────────────────────────────────────────

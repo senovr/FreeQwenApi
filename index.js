@@ -3,7 +3,7 @@ import bodyParser from 'body-parser';
 
 import { initBrowser, shutdownBrowser, detectChrome } from './src/browser/browser.js';
 import apiRoutes from './src/api/routes.js';
-import { getAvailableModelsFromFile, getApiKeys } from './src/api/chat.js';
+import { getAvailableModelsFromFile, getApiKeys, setBrowserAvailable } from './src/api/chat.js';
 import { loadTokens, importTokens, hasValidTokens } from './src/api/tokenManager.js';
 import { addAccountInteractive } from './src/utils/accountSetup.js';
 import { logHttpRequest, logInfo, logError, logWarn } from './src/logger/index.js';
@@ -197,9 +197,19 @@ async function startServer() {
         logInfo('No Chrome/Chromium detected — running in browser-free mode');
     }
 
-    const browserInitialized = await initBrowser(false);
-    if (!browserInitialized) {
-        logError('Не удалось инициализировать браузер. Завершение работы.');
+    // ─── Decide: browser mode or token-only mode ───────────────────────────
+    const tokenOnly = tokensFromArgs || (!chrome && hasValidTokens());
+    if (tokenOnly) {
+        setBrowserAvailable(false);
+        logInfo('Running in token-only mode (no browser). Browser features unavailable.');
+    } else if (chrome) {
+        const browserInitialized = await initBrowser(false);
+        if (!browserInitialized) {
+            logError('Не удалось инициализировать браузер. Завершение работы.');
+            process.exit(1);
+        }
+    } else {
+        logError('No valid tokens and no browser available. Exiting.');
         process.exit(1);
     }
 
