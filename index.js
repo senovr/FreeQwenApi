@@ -4,12 +4,12 @@ import bodyParser from 'body-parser';
 import { initBrowser, shutdownBrowser, detectChrome } from './src/browser/browser.js';
 import apiRoutes from './src/api/routes.js';
 import { getAvailableModelsFromFile, getApiKeys } from './src/api/chat.js';
-import { loadTokens } from './src/api/tokenManager.js';
+import { loadTokens, importTokens, hasValidTokens } from './src/api/tokenManager.js';
 import { addAccountInteractive } from './src/utils/accountSetup.js';
 import { logHttpRequest, logInfo, logError, logWarn } from './src/logger/index.js';
 import { prompt } from './src/utils/prompt.js';
 import { FORGETMEAI_WATERMARK } from './src/utils/branding.js';
-import { PORT, HOST } from './src/config.js';
+import { PORT, HOST, QWEN_TOKENS } from './src/config.js';
 
 const app = express();
 
@@ -95,6 +95,23 @@ async function handleShutdown() {
     process.exit(0);
 }
 
+function parseTokenArgs(argv) {
+    const tokens = [];
+    for (let i = 2; i < argv.length; i++) {
+        if (argv[i] === '--token' && argv[i + 1]) {
+            tokens.push(argv[++i]);
+        } else if (argv[i].startsWith('--token=')) {
+            tokens.push(argv[i].substring('--token='.length));
+        }
+    }
+    return tokens;
+}
+
+function parseEnvTokens(envVar) {
+    if (!envVar) return [];
+    return envVar.split(',').map(t => t.trim()).filter(Boolean);
+}
+
 async function startServer() {
     console.log(`
 ███████ ██████  ███████ ███████  ██████  ██     ██ ███████ ███    ██  █████  ██████  ██ 
@@ -108,6 +125,16 @@ async function startServer() {
 `);
 
     logInfo('Запуск сервера...');
+
+    // ─── Token import from env/CLI ──────────────────────────────────────────
+    const cliTokens = parseTokenArgs(process.argv);
+    const envTokens = parseEnvTokens(QWEN_TOKENS);
+    const allImportTokens = [...cliTokens, ...envTokens];
+    const tokensFromArgs = cliTokens.length > 0 || envTokens.length > 0;
+    if (allImportTokens.length > 0) {
+        const importResult = importTokens(allImportTokens);
+        logInfo(`Imported ${importResult.added} token(s) from env/CLI (total: ${importResult.total})`);
+    }
 
     if (!skipAccountMenu) {
         while (true) {

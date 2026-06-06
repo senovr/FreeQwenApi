@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import { logError } from '../logger/index.js';
 import { SESSION_DIR, ACCOUNTS_DIR } from '../config.js';
 
@@ -87,4 +88,33 @@ export function markValid(id, newToken) {
 
 export function listTokens() {
     return loadTokens();
+}
+
+export function tokenToId(rawToken) {
+    return crypto.createHash('sha256').update(rawToken).digest('hex').slice(0, 8);
+}
+
+export function importTokens(rawTokens) {
+    const existing = loadTokens();
+    const existingIds = new Set(existing.map(t => t.id));
+    let addedCount = 0;
+
+    for (let i = 0; i < rawTokens.length; i++) {
+        const raw = rawTokens[i].trim();
+        if (!raw) continue;
+        const id = tokenToId(raw);
+        if (existingIds.has(id)) continue;
+
+        existing.push({
+            id,
+            token: raw,
+            name: `token-${existing.length + 1}`,
+            addedAt: new Date().toISOString(),
+        });
+        existingIds.add(id);
+        addedCount++;
+    }
+
+    if (addedCount > 0) saveTokens(existing);
+    return { added: addedCount, total: existing.length };
 }
