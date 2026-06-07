@@ -15,8 +15,15 @@
 const strategies = new Map();
 
 /**
- * Register an authentication strategy.
- * @param {AuthStrategy} strategy
+ * Register an authentication strategy in the in-memory registry.
+ *
+ * Validates that `strategy.name` is a non-empty string and that
+ * `strategy.authenticate` is a function, then stores the strategy under
+ * its `name` (overwriting any existing entry with the same name).
+ *
+ * @param {AuthStrategy} strategy - Strategy to register; must include a non-empty string `name` and an `authenticate` function.
+ * @throws {Error} If `strategy.name` is missing or not a non-empty string: "AuthStrategy must have a non-empty string name".
+ * @throws {Error} If `strategy.authenticate` is not a function: "AuthStrategy must implement authenticate()".
  */
 export function registerAuthStrategy(strategy) {
     if (!strategy.name || typeof strategy.name !== 'string') {
@@ -29,17 +36,17 @@ export function registerAuthStrategy(strategy) {
 }
 
 /**
- * Get a registered auth strategy by name.
- * @param {string} name
- * @returns {AuthStrategy|undefined}
+ * Retrieve a registered auth strategy by name.
+ * @param {string} name - The unique strategy name.
+ * @returns {AuthStrategy|undefined} `AuthStrategy` if a strategy with the given name is registered, `undefined` otherwise.
  */
 export function getAuthStrategy(name) {
     return strategies.get(name);
 }
 
 /**
- * List all registered strategy names.
- * @returns {string[]}
+ * List all registered authentication strategy names.
+ * @returns {string[]} Array of registered strategy names.
  */
 export function getAvailableStrategies() {
     return Array.from(strategies.keys());

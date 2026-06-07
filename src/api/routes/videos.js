@@ -13,6 +13,13 @@ const router = express.Router();
 
 const CHAT_MEDIA_MODEL = 'qwen3-vl-plus';
 
+/**
+ * Convert a requested size string into a Qwen-compatible aspect ratio.
+ *
+ * @param {string|number|undefined} size - Requested size (e.g., "1024x1792" or "3:2"); may be falsy.
+ * @param {string} [fallback='16:9'] - Aspect ratio to return when `size` is falsy or unrecognized.
+ * @returns {string} The resolved aspect ratio (e.g., "16:9", "9:16", "1:1") or the provided fallback.
+ */
 function normalizeQwenAspectRatio(size, fallback = '16:9') {
     if (!size) return fallback;
     const value = String(size).trim();
@@ -31,6 +38,16 @@ function normalizeQwenAspectRatio(size, fallback = '16:9') {
     return fallback;
 }
 
+/**
+ * Build a standardized response payload for a completed video or an in-progress video generation task.
+ *
+ * @param {Object} params
+ * @param {Object} params.result - Raw provider result object; may contain `video_url`, `task_id`, `id`, and `status`.
+ * @param {string} params.prompt - The user prompt that initiated the generation.
+ * @param {string} params.model - The model identifier used for generation.
+ * @param {boolean} params.waitForCompletion - Whether the request waited for generation completion.
+ * @returns {Object} A response object containing id, object type (`video.generation` or `video.generation.task`), creation timestamp, watermark, provider, model, prompt, status, task_id, video_url, data array (with video URL when available), waitForCompletion flag, and the raw provider result under `raw`.
+ */
 function buildVideoResponse({ result, prompt, model, waitForCompletion }) {
     const videoUrl = result.video_url || extractMediaUrl(result, 'video');
     return {

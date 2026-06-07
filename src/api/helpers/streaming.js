@@ -16,9 +16,9 @@ export function setSseHeaders(res) {
 }
 
 /**
- * Write a single SSE data chunk.
- * @param {import('express').Response} res
- * @param {object} payload - The JSON payload to send
+ * Send a single Server-Sent Event message by writing a JSON-serialized `data:` chunk to the response.
+ * @param {import('express').Response} res - Express response object (should have SSE headers set).
+ * @param {object} payload - The payload to serialize and send as the event's `data` field.
  */
 export function writeSseChunk(res, payload) {
     res.write('data: ' + JSON.stringify(payload) + '\n\n');
@@ -34,11 +34,12 @@ export function sendSseDone(res) {
 }
 
 /**
- * Build an OpenAI-format SSE chunk.
- * @param {string} model
- * @param {object} delta - The delta content
- * @param {string|null} finishReason
- * @returns {object}
+ * Constructs an OpenAI-style `chat.completion.chunk` object for SSE streaming.
+ *
+ * @param {string} model - Model identifier to include in the chunk; when falsy, defaults to `'qwen-max-latest'`.
+ * @param {object} delta - Partial response content to place in `choices[0].delta`.
+ * @param {string|null} finishReason - Value for `choices[0].finish_reason`, or `null` if not finished.
+ * @returns {object} A chunk with `id`, `object`, `created` (unix seconds), `model`, and `choices` containing the provided `delta` and `finish_reason`.
  */
 export function buildChunk(model, delta, finishReason = null) {
     return {
@@ -52,9 +53,8 @@ export function buildChunk(model, delta, finishReason = null) {
 
 /**
  * Send an SSE error chunk and terminate the stream.
- * @param {import('express').Response} res
- * @param {string} model
- * @param {string} errorMessage
+ * @param {string} model - Model identifier to include in the SSE chunk.
+ * @param {string} errorMessage - Error message to send as the chunk's content.
  */
 export function sendSseError(res, model, errorMessage) {
     writeSseChunk(res, buildChunk(model, { content: errorMessage }, 'stop'));
@@ -62,10 +62,17 @@ export function sendSseError(res, model, errorMessage) {
 }
 
 /**
- * Handle a non-streaming chat completion response.
- * @param {import('express').Response} res
- * @param {object} result - The result from sendMessage
- * @param {string} mappedModel - The mapped model name
+ * Send a non-streaming chat completion HTTP JSON response based on a sendMessage result.
+ *
+ * If `result.error` is present, responds with HTTP 500 and a JSON error object:
+ * `{ error: { message: result.error, type: 'server_error' } }`. Otherwise responds with a
+ * chat completion object that fills defaults for `id`, `created`, `model`, `choices`, and `usage`
+ * while preserving `chatId` and `parentId` from `result`.
+ *
+ * @param {import('express').Response} res - Express response object used to send the HTTP reply.
+ * @param {object} result - Result returned from sendMessage; may contain `error`, `id`, `model`,
+ *   `choices`, `usage`, `chatId`, and `parentId`.
+ * @param {string} mappedModel - Fallback model name to use when `result.model` is not provided.
  */
 export function handleNonStreamingResponse(res, result, mappedModel) {
     if (result.error) {

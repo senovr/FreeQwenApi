@@ -14,6 +14,14 @@ const router = express.Router();
 
 const CHAT_MEDIA_MODEL = 'qwen3-vl-plus';
 
+/**
+ * Resolve an OpenAI-style aspect ratio from common size inputs.
+ *
+ * Accepts pixel-dimension strings like `1024x1792` (mapped to `9:16`), aspect-ratio strings in the form `A:B` (returned unchanged), or returns `fallback` when `size` is missing or not recognized.
+ * @param {string|number|undefined} size - Input size as a pixel-dimension (e.g., `1024x1024`) or an aspect-ratio (`"16:9"`). If falsy, the `fallback` is returned.
+ * @param {string} [fallback='16:9'] - Default aspect ratio to use when `size` is missing or cannot be mapped.
+ * @returns {string} An `A:B` aspect ratio string derived from `size`, or the `fallback` if no valid mapping exists.
+ */
 function normalizeQwenAspectRatio(size, fallback = '16:9') {
     if (!size) return fallback;
     const value = String(size).trim();
@@ -32,6 +40,11 @@ function normalizeQwenAspectRatio(size, fallback = '16:9') {
     return fallback;
 }
 
+/**
+ * Convert a WIDTHxHEIGHT size string into DashScope's WIDTH*HEIGHT format.
+ * @param {string} size - Size in `WIDTHxHEIGHT` form (e.g., `1024x1024`).
+ * @returns {string} The corresponding `WIDTH*HEIGHT` string for DashScope, or `'1024*1024'` if the input is not recognized.
+ */
 function normalizeDashScopeSize(size) {
     const sizeMap = {
         '1024x1024': '1024*1024',
@@ -44,6 +57,16 @@ function normalizeDashScopeSize(size) {
     return sizeMap[size] || '1024*1024';
 }
 
+/**
+ * Builds a normalized OpenAI-like image generation response object.
+ * @param {Object} params
+ * @param {string|null} params.imageUrl - The generated image URL or `null` if unavailable.
+ * @param {string} params.prompt - Original prompt used to generate the image.
+ * @param {string} params.model - Model identifier that produced the image.
+ * @param {any} params.raw - Raw response from the image provider (passed through).
+ * @param {string} [params.provider='qwen-chat'] - Provider identifier (e.g., `"qwen-chat"` or `"dashscope"`).
+ * @returns {Object} Response object with `created` (UNIX seconds), `watermark`, `provider`, `model`, `data` (array with `url` and `revised_prompt`), and `raw`.
+ */
 function buildOpenAiImageResponse({ imageUrl, prompt, model, raw, provider = 'qwen-chat' }) {
     return {
         created: Math.floor(Date.now() / 1000),

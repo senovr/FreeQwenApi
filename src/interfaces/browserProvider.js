@@ -16,8 +16,16 @@
 const providers = new Map();
 
 /**
- * Register a browser provider.
- * @param {BrowserProvider} provider
+ * Register a BrowserProvider implementation under its declared name.
+ *
+ * Validates that `provider.name` is a non-empty string and that `getPage`, `isAvailable`,
+ * and `shutdown` are functions. On success, stores or overwrites the provider in the internal registry keyed by `provider.name`.
+ *
+ * @param {BrowserProvider} provider - Implementation matching the `BrowserProvider` typedef; must include `name`, `getPage`, `isAvailable`, and `shutdown`.
+ * @throws {Error} If `provider.name` is missing or not a non-empty string (message: "BrowserProvider must have a non-empty string name").
+ * @throws {Error} If `provider.getPage` is not a function (message: "BrowserProvider must implement getPage()").
+ * @throws {Error} If `provider.isAvailable` is not a function (message: "BrowserProvider must implement isAvailable()").
+ * @throws {Error} If `provider.shutdown` is not a function (message: "BrowserProvider must implement shutdown()").
  */
 export function registerBrowserProvider(provider) {
     if (!provider.name || typeof provider.name !== 'string') {
@@ -36,17 +44,17 @@ export function registerBrowserProvider(provider) {
 }
 
 /**
- * Get a registered browser provider by name.
- * @param {string} name
- * @returns {BrowserProvider|undefined}
+ * Retrieve a registered browser provider by its name.
+ * @param {string} name - The provider's unique name.
+ * @returns {BrowserProvider|undefined} `BrowserProvider` if found, `undefined` otherwise.
  */
 export function getBrowserProvider(name) {
     return providers.get(name);
 }
 
 /**
- * List all registered provider names.
- * @returns {string[]}
+ * Return the names of all providers currently registered in the in-memory registry.
+ * @returns {string[]} An array of registered provider names.
  */
 export function getAvailableProviders() {
     return Array.from(providers.keys());

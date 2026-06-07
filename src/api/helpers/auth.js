@@ -4,6 +4,13 @@
 import { getApiKeys } from '../chat.js';
 import { logError } from '../../logger/index.js';
 
+/**
+ * Authenticate incoming requests using a configured list of API keys via the `Authorization: Bearer <token>` header.
+ *
+ * If no API keys are configured, authentication is skipped and control is passed to the next middleware. If the
+ * `Authorization` header is missing or does not start with `Bearer `, responds with HTTP 401 and JSON `{ error: 'Требуется авторизация' }`.
+ * If the provided token is not one of the configured API keys, responds with HTTP 401 and JSON `{ error: 'Недействительный токен' }`.
+ */
 export function authMiddleware(req, res, next) {
     const apiKeys = getApiKeys();
     if (apiKeys.length === 0) return next();

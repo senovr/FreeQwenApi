@@ -3,11 +3,25 @@
 
 import crypto from 'crypto';
 
+/**
+ * Normalize provided tools or functions into a combined tool list and return it alongside the chosen tool identifier.
+ * @param {?Array<Object>} tools - Explicit tool descriptors; used as-is when provided.
+ * @param {?Array<Object>} functions - List of function descriptors to convert into tool descriptors when `tools` is not provided. Each entry will be mapped to an object of the form `{ type: 'function', function: fn }`.
+ * @param {?string} toolChoice - An opaque identifier indicating the selected tool (passed through to the return value).
+ * @returns {{ combinedTools: Array<Object>|null, toolChoice: ?string }} An object containing `combinedTools` (the `tools` array if given, otherwise the mapped `functions` array, or `null` if neither was provided) and the original `toolChoice`. 
+ */
 export function buildCombinedTools(tools, functions, toolChoice) {
     const combinedTools = tools || (functions ? functions.map(fn => ({ type: 'function', function: fn })) : null);
     return { combinedTools, toolChoice };
 }
 
+/**
+ * Convert OpenAI-style message content into a single plain string.
+ *
+ * Handles null/undefined, plain strings, arrays of mixed content objects (text, image, image_url, file), and other values by stringifying them.
+ * @param {*} content - Message content which may be a string, an array of parts (each part can be a string or an object with `type` like `'text'`, `'image'`, `'image_url'`, or `'file'`), or any other value.
+ * @returns {string} A single string representation of the content; empty string for null/undefined, joined lines for arrays, or JSON string for other non-string values.
+ */
 export function stringifyOpenAIContent(content) {
     if (content === null || content === undefined) return '';
     if (typeof content === 'string') return content;
@@ -25,6 +39,24 @@ export function stringifyOpenAIContent(content) {
     return JSON.stringify(content);
 }
 
+/**
+ * Builds a single folded transcript string from an array of OpenAI-style messages.
+ *
+ * Processes each message (ignoring falsy values and messages with role "system") and appends
+ * human-readable entries describing the role and its content:
+ * - User messages are rendered as "User: <content>"
+ * - Assistant messages are rendered as "Assistant: <content>" and, if present, an additional
+ *   "Assistant tool calls: <JSON tool_calls>" line is appended
+ * - Tool messages are rendered as "Tool result (<name>): <content>" where <name> is taken from
+ *   the message's `name`, `tool_call_id`, or defaults to "tool"
+ * - Other roles are rendered as "<role>: <content>"
+ *
+ * Message content is converted to a concise string representation before inclusion. The returned
+ * transcript contains the individual entries separated by blank lines.
+ *
+ * @param {Array<Object>} messages - Array of OpenAI-style message objects to fold into a transcript.
+ * @returns {string} The folded transcript as a string (empty string if no applicable messages).
+ */
 export function buildStatelessTranscript(messages) {
     const parts = [];
     for (const msg of messages || []) {
@@ -48,6 +80,11 @@ export function buildStatelessTranscript(messages) {
 }
 
 
+/**
+ * Detects whether a list of messages contains OpenAI tool-related state.
+ * @param {Array<Object>} messages - Chat messages to inspect; each message may include `role`, `tool_calls`, or `function_call`.
+ * @returns {boolean} `true` if any message has `role` of `"tool"` or `"function"`, or if an `"assistant"` message contains non-empty `tool_calls` or a `function_call`, `false` otherwise.
+ */
 export function hasOpenAIToolState(messages) {
     return (messages || []).some(msg =>
         msg?.role === 'tool' ||
@@ -57,6 +94,19 @@ export function hasOpenAIToolState(messages) {
     );
 }
 
+/**
+ * Decide whether the OpenAI-style message history should be folded into a single prompt.
+ *
+ * Determines folding based on message content and context: it will fold when the history
+ * contains OpenAI tool-related state, when there is no effective chat id and multiple
+ * non-system messages exist, or when tools are available and there are multiple
+ * non-system messages.
+ *
+ * @param {Array<Object>} messages - Array of chat messages (may include system/user/assistant/tool roles).
+ * @param {Array|Null} combinedTools - Combined tool descriptors (array when tools are available, otherwise null).
+ * @param {string|Null} effectiveChatId - The effective conversation/chat id, or null/undefined when absent.
+ * @returns {boolean} `true` if the transcript should be folded into a single prompt, `false` otherwise.
+ */
 export function shouldFoldOpenAITranscript(messages, combinedTools, effectiveChatId) {
     const nonSystemMessages = (messages || []).filter(msg => msg && msg.role !== 'system');
     if (nonSystemMessages.length === 0) return false;
@@ -79,6 +129,19 @@ export function shouldFoldOpenAITranscript(messages, combinedTools, effectiveCha
     return false;
 }
 
+/**
+ * Determine the message payload to send to OpenAI by either folding the transcript or using the last user message.
+ *
+ * @param {Array<Object>} messages - Chat messages in chronological order; each message may have `role`, `content`, and `files`.
+ * @param {Array|Null} combinedTools - Combined tool descriptors (used to decide whether folding is necessary).
+ * @param {string|undefined|null} effectiveChatId - The chat identifier used to decide whether folding is necessary.
+ * @returns {{messageContent: string|null, files: Array, folded: boolean, missingUser: boolean}}
+ *   An object containing:
+ *   - `messageContent`: the string to send as the user message or folded transcript, or `null` if no user message exists.
+ *   - `files`: files associated with the selected user message (empty array when none).
+ *   - `folded`: `true` if the transcript was folded into a stateless prompt, `false` otherwise.
+ *   - `missingUser`: `true` when no user message was found, `false` otherwise.
+ */
 export function prepareOpenAIMessageInput(messages, combinedTools, effectiveChatId) {
     const lastUserMessage = (messages || []).filter(msg => msg && msg.role === 'user').pop();
     if (shouldFoldOpenAITranscript(messages, combinedTools, effectiveChatId)) {
@@ -102,11 +165,23 @@ export function prepareOpenAIMessageInput(messages, combinedTools, effectiveChat
     };
 }
 
+/**
+ * Produce a truncated string representation suitable for prompts.
+ * @param {*} value - The value to convert to a string; `null`/`undefined` become an empty string.
+ * @param {number} [maxLen=240] - Maximum number of characters to keep before truncation.
+ * @returns {string} The stringified value truncated to `maxLen` characters, trimmed of trailing whitespace and appended with `…` if truncation occurred.
+ */
 export function truncateForPrompt(value, maxLen = 240) {
     const text = String(value || '');
     return text.length > maxLen ? text.slice(0, maxLen).trimEnd() + '…' : text;
 }
 
+/**
+ * Produce a compact representation of a JSON Schema by keeping only selected fields and recursively truncating nested schemas.
+ * @param {any} schema - The JSON Schema (object or array) to compact. If falsy or not an object, the value is returned unchanged.
+ * @param {number} [depth=0] - Current recursion depth; used to limit recursion and description truncation.
+ * @returns {any} A compacted schema: for objects, contains only `type`, `enum`, `required`, `default`, a truncated `description`, and compacted `properties`, `items`, `oneOf`, and `anyOf`; for arrays, an array of up to 20 compacted elements; if `depth > 2` or input is not an object/array, returns the original `schema`.
+ */
 export function compactJsonSchema(schema, depth = 0) {
     if (!schema || typeof schema !== 'object' || depth > 2) return schema;
     if (Array.isArray(schema)) return schema.slice(0, 20).map(item => compactJsonSchema(item, depth + 1));
@@ -128,6 +203,11 @@ export function compactJsonSchema(schema, depth = 0) {
     return out;
 }
 
+/**
+ * Generate an OpenAI-compatible system prompt that instructs the model how to call the provided tools.
+ * @param {Array<Object>} tools - Array of tool descriptors or function-like objects. Each entry should expose a `name`, optional `description`, and optional `parameters` schema (e.g., { name, description, parameters }) or be an object with a `function` property containing those fields.
+ * @returns {string} A formatted prompt that lists available tool names, compacted tool schemas, and strict rules for emitting minified JSON `tool_calls`; returns an empty string if `tools` is not a non-empty array.
+ */
 export function toolsToPrompt(tools) {
     if (!Array.isArray(tools) || tools.length === 0) return '';
 
@@ -189,6 +269,11 @@ ${JSON.stringify(schemas.map(({priority, ...schema}) => schema), null, 2)}
 If no tool is needed and no skill rule applies, answer normally.`;
 }
 
+/**
+ * Parse model-generated JSON-like tool-call output into a normalized array of tool-call objects.
+ * @param {string} content - Raw model output (may be a JSON block, fenced code, or commonly malformed JSON).
+ * @returns {Array|null} An array of normalized tool-call objects of the form `{ id, type: 'function', function: { name, arguments }, index }`, or `null` if `content` is not a string or no valid tool calls could be extracted.
+ */
 export function parseToolCallJson(content) {
     if (typeof content !== 'string') return null;
     let text = content.trim();
@@ -240,11 +325,24 @@ export function parseToolCallJson(content) {
     return null;
 }
 
+/**
+ * Append generated tool-calling instructions to a system message when applicable.
+ * @param {string|undefined|null} systemMessage - Existing system message text.
+ * @param {Array|object|undefined|null} tools - Tool descriptors used to generate the tool prompt.
+ * @returns {string|undefined|null} The combined system message with the tool prompt appended and trimmed, or the original `systemMessage` if no tool prompt is produced. 
+ */
 export function applyToolPrompt(systemMessage, tools) {
     const prompt = toolsToPrompt(tools);
     return prompt ? `${systemMessage || ''}${prompt}`.trim() : systemMessage;
 }
 
+/**
+ * Construct an OpenAI-compatible assistant response encoding pending tool calls.
+ * @param {Object} result - Original execution result used to seed ids, model, usage, and chat identifiers.
+ * @param {string} mappedModel - Fallback model identifier to use when `result.model` is absent.
+ * @param {Array<Object>} toolCalls - Normalized tool call objects to include in the assistant message; each entry becomes part of `choices[0].message.tool_calls`.
+ * @returns {Object} An OpenAI-style completion payload whose first choice is an assistant message with `content: null` and `tool_calls`, `finish_reason: 'tool_calls'`, and preserved usage and chat identifiers.
+ */
 export function buildOpenAIToolResponse(result, mappedModel, toolCalls) {
     return {
         id: result.id || 'chatcmpl-' + Date.now(),
@@ -268,6 +366,20 @@ export function buildOpenAIToolResponse(result, mappedModel, toolCalls) {
     };
 }
 
+/**
+ * Stream OpenAI-style tool-call Server-Sent Events (SSE) to an HTTP response and then close the response.
+ *
+ * Writes an initial assistant role chunk, one chunk per tool call (each containing a single `tool_calls` entry),
+ * a final chunk with `finish_reason: 'tool_calls'`, a `[DONE]` sentinel, and calls `res.end()`.
+ *
+ * @param {object} res - HTTP response-like object with `write(string)` and `end()` methods where SSE lines are written.
+ * @param {string} mappedModel - Fallback model identifier used when `result.model` is not provided.
+ * @param {object} result - Source result object; may contain `id` (used as event id) and `model` (used as model name).
+ * @param {Array<object>} toolCalls - Ordered array of tool call objects to stream. Each entry should include:
+ *   - {number} index - call order index
+ *   - {string} id - unique call id
+ *   - {object} function - function descriptor to include in the `tool_calls` payload
+ */
 export function writeToolCallsSse(res, mappedModel, result, toolCalls) {
     const base = {
         id: result.id || 'chatcmpl-stream',
