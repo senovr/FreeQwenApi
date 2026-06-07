@@ -2,7 +2,7 @@ import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { saveSession, saveAuthToken } from './session.js';
 import { startManualAuthentication } from './auth.js';
-import { clearPagePool, getAuthToken } from '../api/chat.js';
+import { getAuthToken, clearPagePool } from '../api/sharedState.js';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';

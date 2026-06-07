@@ -3,6 +3,7 @@ import { checkAuthentication, checkVerification } from '../browser/auth.js';
 import { shutdownBrowser, initBrowser } from '../browser/browser.js';
 import { saveAuthToken } from '../browser/session.js';
 import { getAvailableToken, markRateLimited, removeInvalidToken } from './tokenManager.js';
+import { setAuthToken, getAuthToken, isBrowserAvailable, setBrowserAvailable, registerClearPagePool } from './sharedState.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -21,14 +22,9 @@ const __dirname = path.dirname(__filename);
 const MODELS_FILE = path.join(__dirname, '..', 'AvailableModels.txt');
 const AUTH_KEYS_FILE = path.join(__dirname, '..', 'Authorization.txt');
 
-let authToken = null;
 let availableModels = null;
 let authKeys = null;
 let browserTokenRateLimited = false;
-let browserAvailable = true;
-
-export function setBrowserAvailable(val) { browserAvailable = val; }
-export function isBrowserAvailable() { return browserAvailable; }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -94,12 +90,13 @@ export const pagePool = {
         const newPage = await getPage(context);
         await newPage.goto(CHAT_PAGE_URL, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
-        if (!authToken) {
+        if (!getAuthToken()) {
             try {
-                authToken = await newPage.evaluate(() => localStorage.getItem('token'));
+                const extractedToken = await newPage.evaluate(() => localStorage.getItem('token'));
+                setAuthToken(extractedToken);
                 logInfo('Токен авторизации получен из браузера');
-                if (authToken) {
-                    saveAuthToken(authToken);
+                if (extractedToken) {
+                    saveAuthToken(extractedToken);
                 }
             } catch (e) {
                 logError('Ошибка при получении токена авторизации', e);
@@ -200,7 +197,8 @@ export async function pollTaskStatus(taskId, page, token, maxAttempts = TASK_POL
 // ─── Token extraction ────────────────────────────────────────────────────────
 
 export async function extractAuthToken(context, forceRefresh = false) {
-    if (authToken && !forceRefresh) return authToken;
+    const currentToken = getAuthToken();
+    if (currentToken && !forceRefresh) return currentToken;
 
     try {
         const page = await getPage(context);
@@ -213,10 +211,10 @@ export async function extractAuthToken(context, forceRefresh = false) {
             if (shouldClosePage) await page.close();
 
             if (newToken) {
-                authToken = newToken;
+                setAuthToken(newToken);
                 logInfo('Токен авторизации успешно извлечен');
-                saveAuthToken(authToken);
-                return authToken;
+                saveAuthToken(newToken);
+                return newToken;
             }
             logError('Токен авторизации не найден в браузере');
             return null;
@@ -318,7 +316,7 @@ function validateAndPrepareMessage(message) {
 async function resolveAuthToken(browserContext) {
     const tokenObj = await getAvailableToken();
     if (tokenObj && tokenObj.token) {
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Используется аккаунт: ${tokenObj.id}`);
         return tokenObj;
     }
@@ -334,12 +332,13 @@ async function resolveAuthToken(browserContext) {
         if (!authCheck) return null;
     }
 
-    if (!authToken) {
+    if (!getAuthToken()) {
         logInfo('Получение токена авторизации...');
-        authToken = await extractAuthToken(browserContext);
+        setAuthToken(await extractAuthToken(browserContext));
     }
 
-    return authToken ? { id: 'browser', token: authToken } : null;
+    const resolvedToken = getAuthToken();
+    return resolvedToken ? { id: 'browser', token: resolvedToken } : null;
 }
 
 function buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType = 't2t', size = null) {
@@ -717,7 +716,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
         setAuthenticationStatus(false);
         logInfo('Обнаружена необходимость верификации, перезапуск браузера в видимом режиме...');
         await pagePool.clear();
-        authToken = null;
+        setAuthToken(null);
         await shutdownBrowser();
         await initBrowser(true);
         return { error: 'Требуется верификация. Браузер запущен в видимом режиме.', verification: true, chatId };
@@ -725,7 +724,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
 
     if (response.status === 401 || (response.errorBody && (response.errorBody.includes('Unauthorized') || response.errorBody.includes('Token has expired')))) {
         logWarn(`Токен ${tokenObj?.id} недействителен (401). Удаляем и пробуем другой.`);
-        authToken = null;
+        setAuthToken(null);
         browserTokenRateLimited = false;
         if (tokenObj?.id && tokenObj.id !== 'browser') {
             const { markInvalid } = await import('./tokenManager.js');
@@ -754,7 +753,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
             logWarn(`Токен ${tokenObj.id} достиг лимита. Помечаем на ${hours}ч и пробуем другой токен...`);
         }
 
-        authToken = null;
+        setAuthToken(null);
         const { hasValidTokens } = await import('./tokenManager.js');
         if (hasValidTokens() && retryCount < MAX_RETRY_COUNT) {
             return sendMessage(message, model, chatId, parentId, files, null, null, null, chatType, size, waitForCompletion, retryCount + 1, onChunk);
@@ -771,7 +770,7 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
     if (!availableModels) availableModels = getAvailableModelsFromFile();
 
     if (!chatId) {
-        if (!browserAvailable) {
+        if (!isBrowserAvailable()) {
             const newChatResult = await createChatV2NodeFetch(model, 'Новый чат', chatType);
             if (newChatResult.error) return { error: 'Не удалось создать чат: ' + newChatResult.error };
             chatId = newChatResult.chatId;
@@ -804,17 +803,17 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
     }
 
     // ─── Token-only path: no browser required ──────────────────────────────
-    if (!browserAvailable) {
+    if (!isBrowserAvailable()) {
         const tokenObj = await getAvailableToken();
         if (!tokenObj?.token) return { error: 'No valid tokens available', chatId };
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Token-only mode: using account ${tokenObj.id}`);
 
         const payload = buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType, size);
         const apiUrl = `${CHAT_API_URL}?chat_id=${chatId}`;
         logDebug('=== TOKEN-ONLY PAYLOAD ===\n' + JSON.stringify(payload, null, 2));
 
-        const response = await executeApiRequestWithNodeStreaming(apiUrl, payload, authToken, onChunk);
+        const response = await executeApiRequestWithNodeStreaming(apiUrl, payload, getAuthToken(), onChunk);
 
         if (response.success) {
             logInfo('Token-only: response received successfully');
@@ -863,11 +862,11 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
             await page.reload({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
         }
 
-        if (!authToken) {
+        if (!getAuthToken()) {
             logWarn('Токен отсутствует перед отправкой запроса');
-            authToken = await page.evaluate(() => localStorage.getItem('token'));
-            if (!authToken) return { error: 'Токен авторизации не найден. Требуется перезапуск в ручном режиме.', chatId };
-            saveAuthToken(authToken);
+            setAuthToken(await page.evaluate(() => localStorage.getItem('token')));
+            if (!getAuthToken()) return { error: 'Токен авторизации не найден. Требуется перезапуск в ручном режиме.', chatId };
+            saveAuthToken(getAuthToken());
         }
 
         logInfo('Отправка запроса к API v2...');
@@ -877,7 +876,7 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
         logDebug(`Отправка сообщения в чат ${chatId} с parent_id: ${parentId || 'null'}`);
 
         const apiUrl = `${CHAT_API_URL}?chat_id=${chatId}`;
-        const response = await executeApiRequest(page, apiUrl, payload, authToken, onChunk);
+        const response = await executeApiRequest(page, apiUrl, payload, getAuthToken(), onChunk);
 
         if (response.success && response.isTask) {
             logInfo('Обнаружен ответ с задачей (видеогенерация)');
@@ -911,7 +910,7 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
             }
 
             logInfo('Начинаем polling для получения видео...');
-            const taskResult = await pollTaskStatus(taskId, page, authToken);
+            const taskResult = await pollTaskStatus(taskId, page, getAuthToken());
 
             pagePool.releasePage(page);
             page = null;
@@ -1055,16 +1054,16 @@ export async function clearPagePool() {
     await pagePool.clear();
 }
 
-export function getAuthToken() {
-    return authToken;
-}
+// Register clearPagePool implementation with sharedState so browser.js can call it
+// without importing from chat.js (breaks circular dependency).
+registerClearPagePool(async () => { await pagePool.clear(); });
 
 // ─── createChatV2NodeFetch ────────────────────────────────────────────────────
 
 async function createChatV2NodeFetch(model, title, chatType = 't2t') {
     const tokenObj = await getAvailableToken();
     if (!tokenObj?.token) return { error: 'No valid tokens available' };
-    authToken = tokenObj.token;
+    setAuthToken(tokenObj.token);
 
     const payload = { title, models: [model], chat_mode: 'normal', chat_type: chatType, timestamp: Date.now() };
 
@@ -1073,7 +1072,7 @@ async function createChatV2NodeFetch(model, title, chatType = 't2t') {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${authToken}`,
+                'Authorization': `Bearer ${getAuthToken()}`,
             },
             body: JSON.stringify(payload),
         });
@@ -1102,14 +1101,14 @@ export async function createChatV2(model = DEFAULT_MODEL, title = 'Новый ч
 
     const tokenObj = await getAvailableToken();
     if (tokenObj?.token) {
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Используется аккаунт для создания чата: ${tokenObj.id}`);
     }
 
-    if (!authToken) {
+    if (!getAuthToken()) {
         logInfo('Получение токена авторизации для создания чата...');
-        authToken = await extractAuthToken(browserContext);
-        if (!authToken) return { error: 'Не удалось получить токен авторизации' };
+        setAuthToken(await extractAuthToken(browserContext));
+        if (!getAuthToken()) return { error: 'Не удалось получить токен авторизации' };
     }
 
     let page = null;
@@ -1117,7 +1116,7 @@ export async function createChatV2(model = DEFAULT_MODEL, title = 'Новый ч
         page = await pagePool.getPage(browserContext);
 
         const payload = { title, models: [model], chat_mode: 'normal', chat_type: chatType, timestamp: Date.now() };
-        const requestBody = { apiUrl: CREATE_CHAT_URL, payload, token: authToken };
+        const requestBody = { apiUrl: CREATE_CHAT_URL, payload, token: getAuthToken() };
 
         const result = await page.evaluate(async (data) => {
             try {
