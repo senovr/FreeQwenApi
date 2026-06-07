@@ -6,6 +6,7 @@ yarn.lock
 # Данные сессии и кэш
 session/
 .cache/
+.chrome-status
 
 
 # Служебные файлы
@@ -39,3 +40,6 @@ venv/
 *.swo 
 
 src/Authorization.txt
+
+# GSD planning
+.planning/

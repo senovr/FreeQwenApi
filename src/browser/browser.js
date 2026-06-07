@@ -5,6 +5,7 @@ import { startManualAuthentication } from './auth.js';
 import { clearPagePool, getAuthToken } from '../api/chat.js';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { logInfo, logError, logWarn, logDebug } from '../logger/index.js';
 import {
     CHAT_PAGE_URL, NAVIGATION_TIMEOUT, RETRY_DELAY,
@@ -18,7 +19,50 @@ let browserInstance = null;
 let browserContext = null;
 export let isAuthenticated = false;
 
+let _chromeDetectionResult = null;
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+export async function detectChrome() {
+    // Return cached result if already detected
+    if (_chromeDetectionResult !== null) return _chromeDetectionResult;
+
+    // 1. CHROME_PATH env var
+    try {
+        if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+            _chromeDetectionResult = { source: 'CHROME_PATH', path: process.env.CHROME_PATH };
+            return _chromeDetectionResult;
+        }
+    } catch {}
+
+    // 2. Puppeteer cache
+    try {
+        const puppeteerModule = await import('puppeteer');
+        const pptrPath = puppeteerModule.default?.executablePath?.() || puppeteerModule.executablePath?.();
+        if (pptrPath && fs.existsSync(pptrPath)) {
+            _chromeDetectionResult = { source: 'Puppeteer cache', path: pptrPath };
+            return _chromeDetectionResult;
+        }
+    } catch {}
+
+    // 3. System commands
+    const isWin = process.platform === 'win32';
+    const cmd = isWin ? 'where' : 'which';
+
+    for (const browserName of ['chromium', 'google-chrome']) {
+        try {
+            const result = execSync(`${cmd} ${browserName}`, { stdio: ['pipe', 'pipe', 'pipe'] });
+            const p = result.toString().trim().split(/\r?\n/)[0];
+            if (p && fs.existsSync(p)) {
+                _chromeDetectionResult = { source: `system ${browserName}`, path: p };
+                return _chromeDetectionResult;
+            }
+        } catch {}
+    }
+
+    _chromeDetectionResult = null;
+    return null;
+}
 
 export async function initBrowser(visibleMode = true, skipManualRestart = false) {
     if (browserInstance) return true;

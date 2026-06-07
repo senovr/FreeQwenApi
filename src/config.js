@@ -51,6 +51,9 @@ export const HOST = process.env.HOST || '0.0.0.0';
 export const DEFAULT_MODEL = process.env.DEFAULT_MODEL || 'qwen-max-latest';
 export const ALLOW_UNSCOPED_SESSION_CHAT_RESTORE = toBoolean(process.env.ALLOW_UNSCOPED_SESSION_CHAT_RESTORE);
 
+// ─── Token Import ─────────────────────────────────────────────────────────────
+export const QWEN_TOKENS = process.env.QWEN_TOKENS || '';
+
 // ─── Логирование ─────────────────────────────────────────────────────────────
 export const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 export const LOG_MAX_SIZE = Number(process.env.LOG_MAX_SIZE) || 5_242_880; // 5 MB

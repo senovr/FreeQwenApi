@@ -6,6 +6,7 @@
     "type": "module",
     "scripts": {
         "start": "node index.js",
+        "postinstall": "node scripts/postinstall.js",
         "test": "echo \"Ошибка: тест не задан\" && exit 1",
         "example:stream": "node examples/openai-sdk/streaming.js",
         "example:simple": "node examples/openai-sdk/simple.js",
@@ -35,5 +36,8 @@
         "puppeteer-extra": "^3.3.6",
         "puppeteer-extra-plugin-stealth": "^2.11.2",
         "winston": "^3.17.0"
+    },
+    "puppeteer": {
+        "skipDownload": true
     }
 }
