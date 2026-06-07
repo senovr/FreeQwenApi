@@ -2,8 +2,9 @@ import express from 'express';
 import bodyParser from 'body-parser';
 
 import { initBrowser, shutdownBrowser, detectChrome } from './src/browser/browser.js';
-import apiRoutes from './src/api/routes.js';
-import { getAvailableModelsFromFile, getApiKeys, setBrowserAvailable } from './src/api/chat.js';
+import apiRoutes from './src/api/routes/index.js';
+import { getAvailableModelsFromFile, getApiKeys } from './src/api/chat.js';
+import { setBrowserAvailable } from './src/api/sharedState.js';
 import { loadTokens, importTokens, hasValidTokens } from './src/api/tokenManager.js';
 import { addAccountInteractive } from './src/utils/accountSetup.js';
 import { logHttpRequest, logInfo, logError, logWarn } from './src/logger/index.js';

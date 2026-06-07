@@ -3,6 +3,7 @@ import { checkAuthentication, checkVerification } from '../browser/auth.js';
 import { shutdownBrowser, initBrowser } from '../browser/browser.js';
 import { saveAuthToken } from '../browser/session.js';
 import { getAvailableToken, markRateLimited, removeInvalidToken } from './tokenManager.js';
+import { setAuthToken, getAuthToken, isBrowserAvailable, setBrowserAvailable, registerClearPagePool } from './sharedState.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -21,14 +22,9 @@ const __dirname = path.dirname(__filename);
 const MODELS_FILE = path.join(__dirname, '..', 'AvailableModels.txt');
 const AUTH_KEYS_FILE = path.join(__dirname, '..', 'Authorization.txt');
 
-let authToken = null;
 let availableModels = null;
 let authKeys = null;
 let browserTokenRateLimited = false;
-let browserAvailable = true;
-
-export function setBrowserAvailable(val) { browserAvailable = val; }
-export function isBrowserAvailable() { return browserAvailable; }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -94,12 +90,13 @@ export const pagePool = {
         const newPage = await getPage(context);
         await newPage.goto(CHAT_PAGE_URL, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
-        if (!authToken) {
+        if (!getAuthToken()) {
             try {
-                authToken = await newPage.evaluate(() => localStorage.getItem('token'));
+                const extractedToken = await newPage.evaluate(() => localStorage.getItem('token'));
+                setAuthToken(extractedToken);
                 logInfo('Токен авторизации получен из браузера');
-                if (authToken) {
-                    saveAuthToken(authToken);
+                if (extractedToken) {
+                    saveAuthToken(extractedToken);
                 }
             } catch (e) {
                 logError('Ошибка при получении токена авторизации', e);
@@ -197,10 +194,16 @@ export async function pollTaskStatus(taskId, page, token, maxAttempts = TASK_POL
     return { success: false, status: 'timeout', error: 'Превышен таймаут polling задачи' };
 }
 
-// ─── Token extraction ────────────────────────────────────────────────────────
+/**
+ * Attempt to read an authentication token from the provided browser context's localStorage.
+ * @param {object} context - A browser context or page used to access the chat page and localStorage.
+ * @param {boolean} [forceRefresh=false] - If true, ignore any cached token and attempt extraction from the browser.
+ * @returns {string|null} The extracted token if found (also stored via shared state and persisted), or `null` if no token could be obtained.
+ */
 
 export async function extractAuthToken(context, forceRefresh = false) {
-    if (authToken && !forceRefresh) return authToken;
+    const currentToken = getAuthToken();
+    if (currentToken && !forceRefresh) return currentToken;
 
     try {
         const page = await getPage(context);
@@ -213,10 +216,10 @@ export async function extractAuthToken(context, forceRefresh = false) {
             if (shouldClosePage) await page.close();
 
             if (newToken) {
-                authToken = newToken;
+                setAuthToken(newToken);
                 logInfo('Токен авторизации успешно извлечен');
-                saveAuthToken(authToken);
-                return authToken;
+                saveAuthToken(newToken);
+                return newToken;
             }
             logError('Токен авторизации не найден в браузере');
             return null;
@@ -315,10 +318,18 @@ function validateAndPrepareMessage(message) {
     return { error: 'Неподдерживаемый формат сообщения' };
 }
 
+/**
+ * Resolve an authentication token for API requests, preferring an available token and falling back to extracting one from the provided browser context.
+ *
+ * Attempts to use a pre-approved token from the token pool; if none is available and browser tokens are not rate-limited, ensures the browser is authenticated and extracts a token from browser storage. Persists the resolved token via setAuthToken.
+ *
+ * @param {Object} browserContext - Browser or page context used to check authentication and extract a token when needed.
+ * @returns {{id: string, token: string}|null} An object with `id` and `token` when a token is resolved (`id` is `"browser"` for tokens extracted from the browser), or `null` if no token could be resolved (for example, when rate-limited or authentication fails).
+ */
 async function resolveAuthToken(browserContext) {
     const tokenObj = await getAvailableToken();
     if (tokenObj && tokenObj.token) {
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Используется аккаунт: ${tokenObj.id}`);
         return tokenObj;
     }
@@ -334,14 +345,33 @@ async function resolveAuthToken(browserContext) {
         if (!authCheck) return null;
     }
 
-    if (!authToken) {
+    if (!getAuthToken()) {
         logInfo('Получение токена авторизации...');
-        authToken = await extractAuthToken(browserContext);
+        setAuthToken(await extractAuthToken(browserContext));
     }
 
-    return authToken ? { id: 'browser', token: authToken } : null;
+    const resolvedToken = getAuthToken();
+    return resolvedToken ? { id: 'browser', token: resolvedToken } : null;
 }
 
+/**
+ * Build the request payload for the upstream chat API for text or video conversations.
+ *
+ * Constructs a message object and payload configured for streaming or task-based (video) execution,
+ * including model selection, parent/chat IDs, optional files, system message, tool integrations, and feature flags.
+ *
+ * @param {string|Array} messageContent - The user message content (string) or structured message array.
+ * @param {string} model - Model identifier to use for the request.
+ * @param {string|null} chatId - Target chat identifier; may be null for new chats.
+ * @param {string|null} parentId - Parent message identifier within the chat; may be null.
+ * @param {Array|null} files - Optional array of file descriptors to attach to the message.
+ * @param {string|null} systemMessage - Optional system-level message to include in the payload.
+ * @param {Array|null} tools - Optional array of tool definitions to enable for this message.
+ * @param {string|null} toolChoice - Optional tool choice selection; defaults to `'auto'` when tools are provided.
+ * @param {string} [chatType='t2t'] - Chat type: `'t2t'` for text or `'t2v'` for video (affects streaming and feature flags).
+ * @param {string|null} size - Optional size parameter for generation (applied when provided).
+ * @returns {Object} The assembled payload object suitable for sending to the upstream chat API.
+ */
 function buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType = 't2t', size = null) {
     const userMessageId = crypto.randomUUID();
     const assistantChildId = crypto.randomUUID();
@@ -708,6 +738,27 @@ async function executeApiRequest(page, apiUrl, payload, token, onChunk = null) {
     }, requestBody);
 }
 
+/**
+ * Handle errors returned by the upstream API and take recovery actions (token invalidation or rate-limit handling, browser verification restart, or retrying the request).
+ *
+ * @param {object} response - The upstream response object containing status, error, errorBody, html, and/or statusText.
+ * @param {{id?:string,token?:string}|null} tokenObj - The token metadata used for the request; may include `id` to identify and mark tokens.
+ * @param {string|object|Array} message - The original message payload passed to sendMessage; forwarded for retries.
+ * @param {string} model - The model identifier used for the request.
+ * @param {string|null} chatId - The chat identifier associated with the request.
+ * @param {string|null} parentId - The parent message identifier for threading.
+ * @param {Array|null} files - Any files attached to the original request.
+ * @param {number} retryCount - Current retry attempt count.
+ * @param {string} chatType - Chat type (e.g., 't2t' or 't2v').
+ * @param {number|null} size - Optional size parameter used for generation.
+ * @param {boolean} waitForCompletion - Whether callers are waiting for task completion (affects retry/flow decisions).
+ * @param {function|null} onChunk - Optional streaming chunk callback passed through to retries.
+ * @returns {object} An object describing the result:
+ *  - On verification detection: { error: string, verification: true, chatId }.
+ *  - When a retry is initiated: returns the result of the subsequent sendMessage call.
+ *  - When tokens are exhausted or unauthorized: { error: string, chatId }.
+ *  - Default fallback: { error: string, details: string, chatId }.
+ */
 async function handleApiError(response, tokenObj, message, model, chatId, parentId, files, retryCount, chatType, size, waitForCompletion, onChunk = null) {
     logRaw(JSON.stringify(response));
     logError(`Ошибка при получении ответа: ${response.error || response.statusText}`);
@@ -717,7 +768,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
         setAuthenticationStatus(false);
         logInfo('Обнаружена необходимость верификации, перезапуск браузера в видимом режиме...');
         await pagePool.clear();
-        authToken = null;
+        setAuthToken(null);
         await shutdownBrowser();
         await initBrowser(true);
         return { error: 'Требуется верификация. Браузер запущен в видимом режиме.', verification: true, chatId };
@@ -725,7 +776,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
 
     if (response.status === 401 || (response.errorBody && (response.errorBody.includes('Unauthorized') || response.errorBody.includes('Token has expired')))) {
         logWarn(`Токен ${tokenObj?.id} недействителен (401). Удаляем и пробуем другой.`);
-        authToken = null;
+        setAuthToken(null);
         browserTokenRateLimited = false;
         if (tokenObj?.id && tokenObj.id !== 'browser') {
             const { markInvalid } = await import('./tokenManager.js');
@@ -754,7 +805,7 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
             logWarn(`Токен ${tokenObj.id} достиг лимита. Помечаем на ${hours}ч и пробуем другой токен...`);
         }
 
-        authToken = null;
+        setAuthToken(null);
         const { hasValidTokens } = await import('./tokenManager.js');
         if (hasValidTokens() && retryCount < MAX_RETRY_COUNT) {
             return sendMessage(message, model, chatId, parentId, files, null, null, null, chatType, size, waitForCompletion, retryCount + 1, onChunk);
@@ -765,13 +816,30 @@ async function handleApiError(response, tokenObj, message, model, chatId, parent
     return { error: response.error || response.statusText, details: response.errorBody || 'Нет дополнительных деталей', chatId };
 }
 
-// ─── Main public API ─────────────────────────────────────────────────────────
+/**
+ * Send a message to the upstream chat API, handling token resolution, browser vs token-only modes, retries, streaming chunks, and task polling.
+ *
+ * @param {string|Array} message - Message content as a plain string or an array of structured message items (e.g., `{type:'text', text: '...'}`, `{type:'image', image: '...'}`, `{type:'file', file: '...'}`).
+ * @param {string} [model=DEFAULT_MODEL] - Model identifier to use for generation.
+ * @param {string|null} [chatId=null] - Existing chat ID to send the message into; if omitted a new chat will be created.
+ * @param {string|null} [parentId=null] - Parent message ID (reply/threading reference).
+ * @param {Array|null} [files=null] - Optional array of file descriptors to attach to the message.
+ * @param {Array|null} [tools=null] - Optional tools metadata to include in the payload.
+ * @param {string|null} [toolChoice=null] - Tool selection strategy or explicit tool id; defaults to automatic selection when omitted.
+ * @param {string|null} [systemMessage=null] - Optional system-level message to include in the request payload.
+ * @param {string} [chatType='t2t'] - Chat generation type (`'t2t'` text, `'t2i'` image, `'t2v'` video, etc.).
+ * @param {string|null} [size=null] - Optional size parameter for image/video generation.
+ * @param {boolean} [waitForCompletion=true] - For task responses (e.g., video generation), whether to poll and wait for completion.
+ * @param {number} [retryCount=0] - Internal retry counter used by the function when reattempting transient failures.
+ * @param {function|null} [onChunk=null] - Optional callback invoked with streaming content chunks as they arrive (signature: `onChunk(chunkString)`).
+ * @returns {Object} On success returns a completion or task object (examples: `{ id, object, created, model, choices, usage, response_id, chatId, parentId }` for normal completions; task responses include `task_id` and may include `video_url`). On failure returns an error object `{ error: <message>, chatId, ... }`.
+ */
 
 export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null, parentId = null, files = null, tools = null, toolChoice = null, systemMessage = null, chatType = 't2t', size = null, waitForCompletion = true, retryCount = 0, onChunk = null) {
     if (!availableModels) availableModels = getAvailableModelsFromFile();
 
     if (!chatId) {
-        if (!browserAvailable) {
+        if (!isBrowserAvailable()) {
             const newChatResult = await createChatV2NodeFetch(model, 'Новый чат', chatType);
             if (newChatResult.error) return { error: 'Не удалось создать чат: ' + newChatResult.error };
             chatId = newChatResult.chatId;
@@ -804,17 +872,17 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
     }
 
     // ─── Token-only path: no browser required ──────────────────────────────
-    if (!browserAvailable) {
+    if (!isBrowserAvailable()) {
         const tokenObj = await getAvailableToken();
         if (!tokenObj?.token) return { error: 'No valid tokens available', chatId };
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Token-only mode: using account ${tokenObj.id}`);
 
         const payload = buildPayloadV2(messageContent, model, chatId, parentId, files, systemMessage, tools, toolChoice, chatType, size);
         const apiUrl = `${CHAT_API_URL}?chat_id=${chatId}`;
         logDebug('=== TOKEN-ONLY PAYLOAD ===\n' + JSON.stringify(payload, null, 2));
 
-        const response = await executeApiRequestWithNodeStreaming(apiUrl, payload, authToken, onChunk);
+        const response = await executeApiRequestWithNodeStreaming(apiUrl, payload, getAuthToken(), onChunk);
 
         if (response.success) {
             logInfo('Token-only: response received successfully');
@@ -863,11 +931,11 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
             await page.reload({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
         }
 
-        if (!authToken) {
+        if (!getAuthToken()) {
             logWarn('Токен отсутствует перед отправкой запроса');
-            authToken = await page.evaluate(() => localStorage.getItem('token'));
-            if (!authToken) return { error: 'Токен авторизации не найден. Требуется перезапуск в ручном режиме.', chatId };
-            saveAuthToken(authToken);
+            setAuthToken(await page.evaluate(() => localStorage.getItem('token')));
+            if (!getAuthToken()) return { error: 'Токен авторизации не найден. Требуется перезапуск в ручном режиме.', chatId };
+            saveAuthToken(getAuthToken());
         }
 
         logInfo('Отправка запроса к API v2...');
@@ -877,7 +945,7 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
         logDebug(`Отправка сообщения в чат ${chatId} с parent_id: ${parentId || 'null'}`);
 
         const apiUrl = `${CHAT_API_URL}?chat_id=${chatId}`;
-        const response = await executeApiRequest(page, apiUrl, payload, authToken, onChunk);
+        const response = await executeApiRequest(page, apiUrl, payload, getAuthToken(), onChunk);
 
         if (response.success && response.isTask) {
             logInfo('Обнаружен ответ с задачей (видеогенерация)');
@@ -911,7 +979,7 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
             }
 
             logInfo('Начинаем polling для получения видео...');
-            const taskResult = await pollTaskStatus(taskId, page, authToken);
+            const taskResult = await pollTaskStatus(taskId, page, getAuthToken());
 
             pagePool.releasePage(page);
             page = null;
@@ -1051,20 +1119,31 @@ export async function pollQwenTaskStatus(taskId, waitForCompletion = false) {
     }
 }
 
+/**
+ * Clears and closes all pooled browser pages except the base context.
+ *
+ * Empties the page pool and closes any pages it manages to release resources.
+ */
 export async function clearPagePool() {
     await pagePool.clear();
 }
 
-export function getAuthToken() {
-    return authToken;
-}
+// Register clearPagePool implementation with sharedState so browser.js can call it
+// without importing from chat.js (breaks circular dependency).
+registerClearPagePool(async () => { await pagePool.clear(); });
 
-// ─── createChatV2NodeFetch ────────────────────────────────────────────────────
+/**
+ * Create a new chat on the upstream service using an available API token.
+ * @param {string} model - Model identifier to assign to the new chat.
+ * @param {string} title - Title for the new chat.
+ * @param {string} [chatType='t2t'] - Chat type (e.g., `'t2t'`, `'t2v'`); defaults to `'t2t'`.
+ * @return {{success: true, chatId: string}|{error: string}} An object with `{ success: true, chatId }` on success, or `{ error }` on failure.
+ */
 
 async function createChatV2NodeFetch(model, title, chatType = 't2t') {
     const tokenObj = await getAvailableToken();
     if (!tokenObj?.token) return { error: 'No valid tokens available' };
-    authToken = tokenObj.token;
+    setAuthToken(tokenObj.token);
 
     const payload = { title, models: [model], chat_mode: 'normal', chat_type: chatType, timestamp: Date.now() };
 
@@ -1073,7 +1152,7 @@ async function createChatV2NodeFetch(model, title, chatType = 't2t') {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${authToken}`,
+                'Authorization': `Bearer ${getAuthToken()}`,
             },
             body: JSON.stringify(payload),
         });
@@ -1094,7 +1173,19 @@ async function createChatV2NodeFetch(model, title, chatType = 't2t') {
     }
 }
 
-// ─── createChatV2 ────────────────────────────────────────────────────────────
+/**
+ * Create a new chat on the upstream service and return its identifier.
+ *
+ * Attempts to ensure an authorization token is available (from available accounts or browser storage),
+ * sends a create-chat request, and retries transient server errors up to the configured limit.
+ *
+ * @param {string} [model=DEFAULT_MODEL] - Model identifier to associate with the chat.
+ * @param {string} [title='Новый чат'] - Title for the new chat.
+ * @param {number} [retryCount=0] - Current retry attempt count (used internally for retries).
+ * @param {string} [chatType='t2t'] - Chat type, e.g. `'t2t'` (text-to-text) or `'t2v'` (text-to-video).
+ * @returns {{success: true, chatId: string, requestId?: string} | {error: string}}
+ *          `{ success: true, chatId, requestId }` on success; otherwise an object with an `error` string describing the failure.
+ */
 
 export async function createChatV2(model = DEFAULT_MODEL, title = 'Новый чат', retryCount = 0, chatType = 't2t') {
     const browserContext = getBrowserContext();
@@ -1102,14 +1193,14 @@ export async function createChatV2(model = DEFAULT_MODEL, title = 'Новый ч
 
     const tokenObj = await getAvailableToken();
     if (tokenObj?.token) {
-        authToken = tokenObj.token;
+        setAuthToken(tokenObj.token);
         logInfo(`Используется аккаунт для создания чата: ${tokenObj.id}`);
     }
 
-    if (!authToken) {
+    if (!getAuthToken()) {
         logInfo('Получение токена авторизации для создания чата...');
-        authToken = await extractAuthToken(browserContext);
-        if (!authToken) return { error: 'Не удалось получить токен авторизации' };
+        setAuthToken(await extractAuthToken(browserContext));
+        if (!getAuthToken()) return { error: 'Не удалось получить токен авторизации' };
     }
 
     let page = null;
@@ -1117,7 +1208,7 @@ export async function createChatV2(model = DEFAULT_MODEL, title = 'Новый ч
         page = await pagePool.getPage(browserContext);
 
         const payload = { title, models: [model], chat_mode: 'normal', chat_type: chatType, timestamp: Date.now() };
-        const requestBody = { apiUrl: CREATE_CHAT_URL, payload, token: authToken };
+        const requestBody = { apiUrl: CREATE_CHAT_URL, payload, token: getAuthToken() };
 
         const result = await page.evaluate(async (data) => {
             try {

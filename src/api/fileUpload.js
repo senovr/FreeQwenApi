@@ -1,6 +1,7 @@
 import { getBrowserContext } from '../browser/browser.js';
 import { logInfo, logError } from '../logger/index.js';
-import { getAuthToken, extractAuthToken, pagePool } from './chat.js';
+import { getAuthToken } from './sharedState.js';
+import { extractAuthToken, pagePool } from './chat.js';
 import { getAvailableToken } from './tokenManager.js';
 import fs from 'fs';
 import path from 'path';
