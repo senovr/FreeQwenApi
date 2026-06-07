@@ -20,7 +20,14 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename(req, file, cb) {
-        cb(null, Date.now() + '-' + crypto.randomBytes(8).toString('hex') + '-' + file.originalname);
+        // Санитизация filename для предотвращения path traversal
+        let safeName = path.basename(file.originalname || 'upload');
+        // Удаляем опасные символы и паттерны
+        safeName = safeName.replace(/\.\./g, '').replace(/[\/\\]/g, '').replace(/\0/g, '');
+        // Ограничиваем длину и нормализуем
+        safeName = safeName.substring(0, 255);
+        if (!safeName) safeName = 'upload';
+        cb(null, Date.now() + '-' + crypto.randomBytes(8).toString('hex') + '-' + safeName);
     }
 });
 

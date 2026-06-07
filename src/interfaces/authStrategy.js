@@ -18,12 +18,14 @@ const strategies = new Map();
  * Register an authentication strategy in the in-memory registry.
  *
  * Validates that `strategy.name` is a non-empty string and that
- * `strategy.authenticate` is a function, then stores the strategy under
- * its `name` (overwriting any existing entry with the same name).
+ * `strategy.authenticate`, `strategy.refreshToken`, and `strategy.isAvailable` are functions,
+ * then stores the strategy under its `name` (overwriting any existing entry with the same name).
  *
- * @param {AuthStrategy} strategy - Strategy to register; must include a non-empty string `name` and an `authenticate` function.
+ * @param {AuthStrategy} strategy - Strategy to register; must include a non-empty string `name` and all required methods.
  * @throws {Error} If `strategy.name` is missing or not a non-empty string: "AuthStrategy must have a non-empty string name".
  * @throws {Error} If `strategy.authenticate` is not a function: "AuthStrategy must implement authenticate()".
+ * @throws {Error} If `strategy.refreshToken` is not a function: "AuthStrategy must implement refreshToken()".
+ * @throws {Error} If `strategy.isAvailable` is not a function: "AuthStrategy must implement isAvailable()".
  */
 export function registerAuthStrategy(strategy) {
     if (!strategy.name || typeof strategy.name !== 'string') {
@@ -31,6 +33,12 @@ export function registerAuthStrategy(strategy) {
     }
     if (typeof strategy.authenticate !== 'function') {
         throw new Error('AuthStrategy must implement authenticate()');
+    }
+    if (typeof strategy.refreshToken !== 'function') {
+        throw new Error('AuthStrategy must implement refreshToken()');
+    }
+    if (typeof strategy.isAvailable !== 'function') {
+        throw new Error('AuthStrategy must implement isAvailable()');
     }
     strategies.set(strategy.name, strategy);
 }

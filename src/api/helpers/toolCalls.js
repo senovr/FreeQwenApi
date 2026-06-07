@@ -302,9 +302,9 @@ export function parseToolCallJson(content) {
                 calls = parsed.tool_calls;
             } else if (parsed.function_call || parsed.tool_call) {
                 calls = [parsed.function_call || parsed.tool_call];
-            } else if (parsed.name || parsed.tool) {
-                calls = [parsed];
             }
+            // Удаляем fallback parsed.name || parsed.tool, чтобы не обрабатывать
+            // произвольные JSON объекты как tool calls
             if (!calls || calls.length === 0) continue;
             return calls.map((call, index) => {
                 const name = call.name || call.tool || call.function?.name;

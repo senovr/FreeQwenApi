@@ -12,13 +12,14 @@ import { normalizeIdValue } from './messageParsing.js';
  * Filters out Open WebUI service user messages that start with "### Task:" or "History:"; if that removes all messages, the original history is used. The function derives a string from the first user message (string content as-is, otherwise JSON-stringified), hashes it with SHA-256, and returns an ID in the form `chat_<hash>`.
  *
  * @param {Array<object>} messages - Conversation history array of message objects with at least a `role` and `content` property.
+ * @param {string|null} [sessionId=null] - Optional session/user identifier to scope the chat ID and prevent cross-user collisions.
  * @returns {string|null} `chat_<hash>` where `<hash>` is the first 16 hex characters of the SHA-256 of the derived user message, or `null` if an ID cannot be generated (invalid/empty input or no usable user message).
  */
-export function generateChatIdFromHistory(messages) {
+export function generateChatIdFromHistory(messages, sessionId = null) {
     if (!Array.isArray(messages) || messages.length === 0) {
         return null;
     }
-    
+
     // Фильтруем служебные сообщения Open WebUI
     // Игнорируем сообщения, которые начинаются с "### Task:" или "History:"
     const realMessages = messages.filter(m => {
@@ -26,41 +27,50 @@ export function generateChatIdFromHistory(messages) {
         const content = typeof m.content === 'string' ? m.content : '';
         return !content.startsWith('### Task:') && !content.startsWith('History:');
     });
-    
+
     // Если остались только служебные сообщения, используем исходные
     const messagesToUse = realMessages.length > 0 ? realMessages : messages;
-    
+
     // Используем хеш первого реального сообщения пользователя для создания стабильного ID
     const userMessages = messagesToUse
         .filter(m => m.role === 'user')
         .slice(0, 1) // Берём первое сообщение пользователя
         .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
         .join('||');
-    
+
     if (!userMessages) return null;
-    
+
+    // Добавляем sessionId в качестве префикса для разделения пользователей/сессий
+    const hashInput = sessionId ? `${sessionId}::${userMessages}` : userMessages;
+
     // Создаём хеш для детерминированного ID
     const hash = crypto
         .createHash('sha256')
-        .update(userMessages)
+        .update(hashInput)
         .digest('hex')
         .substring(0, 16);
-    
+
     return `chat_${hash}`;
 }
 
 /**
  * Create a deterministic internal chat identifier derived from a hint.
  * @param {any} hint - Value used to derive the identifier; will be normalized before hashing.
+ * @param {string|null} [sessionId=null] - Optional session/user identifier to scope the chat ID and prevent cross-user collisions.
  * @returns {string|null} `chat_<hash>` where `<hash>` is the first 16 hex characters of the SHA-256 of `client-conversation:<normalizedHint>`, or `null` if the hint is falsy after normalization.
  */
-export function buildInternalChatIdFromHint(hint) {
+export function buildInternalChatIdFromHint(hint, sessionId = null) {
     const normalizedHint = normalizeIdValue(hint);
     if (!normalizedHint) return null;
 
+    // Добавляем sessionId в качестве префикса для разделения пользователей/сессий
+    const hashInput = sessionId
+        ? `${sessionId}::client-conversation:${normalizedHint}`
+        : `client-conversation:${normalizedHint}`;
+
     const hash = crypto
         .createHash('sha256')
-        .update(`client-conversation:${normalizedHint}`)
+        .update(hashInput)
         .digest('hex')
         .substring(0, 16);
 
@@ -68,6 +78,7 @@ export function buildInternalChatIdFromHint(hint) {
 }
 
 // Глобальное хранилище для маппинга между сгенерированными ID и реальными Qwen chatId
+// Вложенная структура Map<sessionId, Map<generatedId, qwenChatId>> для изоляции сессий
 const chatIdMap = new Map();
 
 export { chatIdMap };
@@ -76,11 +87,13 @@ export { chatIdMap };
  * Store an association between an internal generated chat ID and a Qwen chatId.
  * @param {string} generatedId - The internal chat identifier (e.g., `chat_<hash>`). If falsy, no mapping is stored.
  * @param {string} qwenChatId - The resolved Qwen chatId to associate with `generatedId`.
+ * @param {string|null} [sessionId=null] - Optional session/user identifier to scope the mapping.
  */
-export function mapChatId(generatedId, qwenChatId) {
+export function mapChatId(generatedId, qwenChatId, sessionId = null) {
     if (generatedId) {
-        chatIdMap.set(generatedId, qwenChatId);
-        logDebug(`Маппинг чата: ${generatedId} -> ${qwenChatId}`);
+        const key = sessionId ? `${sessionId}::${generatedId}` : generatedId;
+        chatIdMap.set(key, qwenChatId);
+        logDebug(`Маппинг чата: ${generatedId} -> ${qwenChatId}${sessionId ? ` (session: ${sessionId})` : ''}`);
     }
 }
 
@@ -88,10 +101,13 @@ export function mapChatId(generatedId, qwenChatId) {
  * Retrieve the resolved Qwen chatId for an internal generated chat id.
  *
  * @param {string} generatedId - The internal `chat_<hash>` id previously generated.
+ * @param {string|null} [sessionId=null] - Optional session/user identifier to scope the lookup.
  * @returns {string|undefined|null} The mapped Qwen `chatId` if a mapping exists, `undefined` if no mapping is stored, or `null` if `generatedId` is falsy.
  */
-export function getChatIdFromMap(generatedId) {
-    return generatedId ? chatIdMap.get(generatedId) : null;
+export function getChatIdFromMap(generatedId, sessionId = null) {
+    if (!generatedId) return null;
+    const key = sessionId ? `${sessionId}::${generatedId}` : generatedId;
+    return chatIdMap.get(key);
 }
 
 /**
@@ -103,11 +119,12 @@ export function getChatIdFromMap(generatedId) {
  *
  * @param {string|null|undefined} effectiveChatId - The internal chat identifier to resolve (e.g., `chat_<hash>`).
  * @param {object} mappedModel - The model/client used to create a new Qwen chat when needed.
- * @returns {string|null|undefined} The resolved Qwen `chatId` string if found or created; otherwise the original `effectiveChatId` or `null`/`undefined` if none.
+ * @param {string|null} [sessionId=null] - Optional session/user identifier to scope the mapping lookup.
+ * @returns {string|null|undefined} The resolved Qwen `chatId` string if found or created; otherwise `null`/`undefined` to signal failure.
  */
-export async function resolveQwenChatId(effectiveChatId, mappedModel) {
-    let qwenChatId = effectiveChatId;
-    const mapped = getChatIdFromMap(effectiveChatId);
+export async function resolveQwenChatId(effectiveChatId, mappedModel, sessionId = null) {
+    let qwenChatId = null;
+    const mapped = getChatIdFromMap(effectiveChatId, sessionId);
 
     if (mapped) {
         qwenChatId = mapped;
@@ -119,7 +136,7 @@ export async function resolveQwenChatId(effectiveChatId, mappedModel) {
         try {
             const created = await createChatV2(mappedModel, 'Сессия OpenWebUI');
             if (created && created.chatId) {
-                mapChatId(effectiveChatId, created.chatId);
+                mapChatId(effectiveChatId, created.chatId, sessionId);
                 qwenChatId = created.chatId;
                 logInfo(`🔨 Создан Qwen chat ${qwenChatId} и привязан к ${effectiveChatId}`);
             }

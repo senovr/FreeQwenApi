@@ -5,6 +5,7 @@ import { getAllModels, getApiKeys, testToken } from '../chat.js';
 import { getAuthenticationStatus, getBrowserContext } from '../../browser/browser.js';
 import { checkAuthentication } from '../../browser/auth.js';
 import { listTokens, markValid, markRateLimited, markInvalid } from '../tokenManager.js';
+import { isBrowserAvailable } from '../sharedState.js';
 import { logInfo, logError } from '../../logger/index.js';
 import { DEFAULT_MODEL } from '../../config.js';
 import { FORGETMEAI_WATERMARK } from '../../utils/branding.js';
@@ -18,8 +19,11 @@ router.get('/health', async (req, res) => {
         const now = Date.now();
         const availableAccounts = tokens.filter(t => (!t.resetAt || new Date(t.resetAt).getTime() <= now) && !t.invalid).length;
 
+        // Считаем сервис работающим, если есть аккаунты ИЛИ доступен браузер-режим
+        const ok = availableAccounts > 0 || isBrowserAvailable();
+
         res.json({
-            ok: availableAccounts > 0,
+            ok,
             service: 'FreeQwenApi',
             watermark: FORGETMEAI_WATERMARK,
             baseUrl: '/api',
@@ -86,7 +90,10 @@ router.get('/status', async (req, res) => {
             return res.json({ authenticated: false, message: 'Браузер не инициализирован', accounts });
         }
 
-        if (getAuthenticationStatus()) return res.json({ accounts });
+        if (getAuthenticationStatus()) {
+            logInfo('Авторизация активна (fast path)');
+            return res.json({ authenticated: true, message: 'Авторизация активна', accounts });
+        }
 
         await checkAuthentication(browserContext);
         const isAuthenticated = getAuthenticationStatus();

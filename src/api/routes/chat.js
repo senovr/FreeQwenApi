@@ -400,6 +400,16 @@ router.post('/chat/completions', async (req, res) => {
                 if (captureToolCalls) {
                     const toolCalls = parseToolCallJson(result?.choices?.[0]?.message?.content);
                     if (toolCalls && toolCalls.length > 0) {
+                        // Сохраняем маппинг и сессию перед возвратом
+                        if (!isMeta && result.chatId) {
+                            if (effectiveChatId && effectiveChatId.startsWith('chat_')) {
+                                mapChatId(effectiveChatId, result.chatId);
+                                logDebug(`Маппинг сохранён (tool calls): ${effectiveChatId} -> ${result.chatId}`);
+                            }
+                            if (shouldPersistSessionContext(conversationScope)) {
+                                saveChatIdForSession(req, result.chatId, result.parentId, conversationScope);
+                            }
+                        }
                         writeToolCallsSse(res, mappedModel, result, toolCalls);
                         return;
                     }

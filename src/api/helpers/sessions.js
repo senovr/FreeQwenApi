@@ -60,6 +60,14 @@ export function getScopedSessionKey(req, scope = null) {
 export function getSavedChatId(req, scope = null) {
     const keysToTry = [getScopedSessionKey(req, scope)];
 
+    // Если включен legacy-режим, пробуем также unscoped ключ (без scope)
+    if (ALLOW_UNSCOPED_SESSION_CHAT_RESTORE) {
+        const unscopedKey = getSessionKey(req);
+        if (!keysToTry.includes(unscopedKey)) {
+            keysToTry.push(unscopedKey);
+        }
+    }
+
     for (const sessionKey of keysToTry) {
         const sessionData = sessionToChatMap.get(sessionKey);
         if (sessionData && (Date.now() - sessionData.timestamp) < 3600000) { // 1 hour

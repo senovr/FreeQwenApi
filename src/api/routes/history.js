@@ -19,8 +19,13 @@ router.post('/chats/:chatId/history', async (req, res) => {
             return res.status(400).json({ error: 'История сообщений должна быть массивом' });
         }
 
-        // Здесь можно добавить логику сохранения истории
-        // Для теперь просто подтверждаем сохранение
+        // Сохраняем историю через saveHistory
+        const saveResult = await saveHistory(chatId, messages);
+        if (!saveResult) {
+            logError(`Не удалось сохранить историю для чата ${chatId}`);
+            return res.status(500).json({ error: 'Не удалось сохранить историю' });
+        }
+
         res.json({
             success: true,
             chatId: chatId,
@@ -39,12 +44,13 @@ router.get('/chats/:chatId/history', async (req, res) => {
 
         logInfo(`Запрос истории для чата: ${chatId}`);
 
-        // Здесь можно добавить логику получения истории из БД
-        // Для теперь возвращаем пустую историю
+        // Загружаем историю через loadHistory
+        const messages = await loadHistory(chatId);
+
         res.json({
             success: true,
             chatId: chatId,
-            messages: []
+            messages: messages || []
         });
     } catch (error) {
         logError('Ошибка при получении истории чата', error);

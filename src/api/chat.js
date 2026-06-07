@@ -933,9 +933,14 @@ export async function sendMessage(message, model = DEFAULT_MODEL, chatId = null,
 
         if (!getAuthToken()) {
             logWarn('Токен отсутствует перед отправкой запроса');
-            setAuthToken(await page.evaluate(() => localStorage.getItem('token')));
+            const extracted = await page.evaluate(() => localStorage.getItem('token'));
+            if (extracted) {
+                setAuthToken(extracted);
+                saveAuthToken(getAuthToken());
+            } else {
+                logWarn('Не удалось извлечь токен из localStorage');
+            }
             if (!getAuthToken()) return { error: 'Токен авторизации не найден. Требуется перезапуск в ручном режиме.', chatId };
-            saveAuthToken(getAuthToken());
         }
 
         logInfo('Отправка запроса к API v2...');
