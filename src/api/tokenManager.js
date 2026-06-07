@@ -110,6 +110,7 @@ export function importTokens(rawTokens) {
             token: raw,
             name: `token-${existing.length + 1}`,
             addedAt: new Date().toISOString(),
+            resetAt: null,
         });
         existingIds.add(id);
         addedCount++;

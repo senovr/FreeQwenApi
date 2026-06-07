@@ -97,6 +97,7 @@ The proxy is used as a backend for AI tools: OpenCode, Hermes (via Telegram/Sign
 | `STREAMING_CHUNK_DELAY` | `20` | Delay between SSE chunks (ms) |
 | `ALLOW_UNSCOPED_SESSION_CHAT_RESTORE` | `false` | Enable unscoped session restore |
 | `MAX_FILE_SIZE` | `10MB` | Upload file size limit |
+| `QWEN_TOKENS` | — | Import tokens from environment for token-only mode |
 
 - `Dockerfile` — Multi-stage Docker build
 - `docker-compose.yml` — Container orchestration with volume mounts
@@ -364,9 +365,15 @@ The proxy is used as a backend for AI tools: OpenCode, Hermes (via Telegram/Sign
 
 ### Monolithic Route File
 
+`src/api/routes.js` contains all HTTP endpoints in a single 800+ line file. As new features are added (images, video, file uploads), the file becomes harder to navigate. Mitigation: split routes by domain (chat routes, file routes, image routes) into separate modules and compose them in the main routes file.
+
 ### Duplicated Streaming Logic
 
+Streaming response handling appears in multiple route handlers with similar SSE formatting code. This creates maintenance overhead when streaming behavior needs to change. Mitigation: centralize stream handling into a shared utility function that accepts an async generator and handles SSE formatting, error handling, and cleanup.
+
 ### Circular Dependency Between Browser and Chat
+
+`src/browser/browser.js` imports from `src/api/chat.js` (`clearPagePool`, `getAuthToken`) and `src/api/chat.js` imports from `src/browser/browser.js` (`getBrowserContext`). While ES modules support this via live bindings, it creates tight coupling. Mitigation: introduce an intermediary event emitter or dependency injection pattern to break the direct circular import.
 
 ## Error Handling
 
